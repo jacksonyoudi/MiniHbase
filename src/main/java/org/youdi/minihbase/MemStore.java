@@ -1,10 +1,6 @@
 package org.youdi.minihbase;
 
 import org.apache.log4j.Logger;
-import org.youdi.minihbase.DiskStore.MultiIter;
-import org.youdi.minihbase.MStore.SeekIter;
-import org.youdi.minihbase.MiniBase.Flusher;
-
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.*;
@@ -18,19 +14,21 @@ public class MemStore implements Closeable {
 
   private static final Logger LOG = Logger.getLogger(MemStore.class);
 
+  //  用于计数，控制什么时候刷磁盘
   private final AtomicLong dataSize = new AtomicLong();
 
-  private volatile ConcurrentSkipListMap<org.youdi.minihbase.KeyValue, org.youdi.minihbase.KeyValue> kvMap;
-  private volatile ConcurrentSkipListMap<org.youdi.minihbase.KeyValue, org.youdi.minihbase.KeyValue> snapshot;
+  private volatile ConcurrentSkipListMap<KeyValue, KeyValue> kvMap;
+  private volatile ConcurrentSkipListMap<KeyValue, KeyValue> snapshot;
 
   private final ReentrantReadWriteLock updateLock = new ReentrantReadWriteLock();
   private final AtomicBoolean isSnapshotFlushing = new AtomicBoolean(false);
   private ExecutorService pool;
 
   private Config conf;
-  private Flusher flusher;
+  private MiniBase.Flusher flusher;
 
-  public MemStore(Config conf, Flusher flusher, ExecutorService pool) {
+  // 初始化配置
+  public MemStore(Config conf, MiniBase.Flusher flusher, ExecutorService pool) {
     this.conf = conf;
     this.flusher = flusher;
     this.pool = pool;
@@ -40,11 +38,14 @@ public class MemStore implements Closeable {
     this.snapshot = null;
   }
 
-  public void add(org.youdi.minihbase.KeyValue kv) throws IOException {
+  // 写入一个key 写入过程中，会阻塞 刷磁盘，写完以后，不阻塞
+  public void add(KeyValue kv) throws IOException {
+    // 是否flush
     flushIfNeeded(true);
     updateLock.readLock().lock();
     try {
-      org.youdi.minihbase.KeyValue prevKeyValue;
+      KeyValue prevKeyValue;
+      // 跳表写入数据
       if ((prevKeyValue = kvMap.put(kv, kv)) == null) {
         dataSize.addAndGet(kv.getSerializeSize());
       } else {
@@ -86,6 +87,7 @@ public class MemStore implements Closeable {
       // Step.1 memstore snpashot
       updateLock.writeLock().lock();
       try {
+        // 直接复制成一个新的
         snapshot = kvMap;
         // TODO MemStoreIter may find the kvMap changed ? should synchronize ?
         kvMap = new ConcurrentSkipListMap<>();
@@ -119,16 +121,16 @@ public class MemStore implements Closeable {
     }
   }
 
-  public SeekIter<org.youdi.minihbase.KeyValue> createIterator() throws IOException {
+  public MStore.SeekIter<KeyValue> createIterator() throws IOException {
     return new MemStoreIter(kvMap, snapshot);
   }
 
-  public static class IteratorWrapper implements SeekIter<org.youdi.minihbase.KeyValue> {
+  public static class IteratorWrapper implements MStore.SeekIter<KeyValue> {
 
-    private SortedMap<org.youdi.minihbase.KeyValue, org.youdi.minihbase.KeyValue> sortedMap;
-    private Iterator<org.youdi.minihbase.KeyValue> it;
+    private SortedMap<KeyValue, KeyValue> sortedMap;
+    private Iterator<KeyValue> it;
 
-    public IteratorWrapper(SortedMap<org.youdi.minihbase.KeyValue, org.youdi.minihbase.KeyValue> sortedMap) {
+    public IteratorWrapper(SortedMap<KeyValue, KeyValue> sortedMap) {
       this.sortedMap = sortedMap;
       this.it = sortedMap.values().iterator();
     }
@@ -139,22 +141,22 @@ public class MemStore implements Closeable {
     }
 
     @Override
-    public org.youdi.minihbase.KeyValue next() throws IOException {
+    public KeyValue next() throws IOException {
       return it.next();
     }
 
     @Override
-    public void seekTo(org.youdi.minihbase.KeyValue kv) throws IOException {
+    public void seekTo(KeyValue kv) throws IOException {
       it = sortedMap.tailMap(kv).values().iterator();
     }
   }
 
-  private class MemStoreIter implements SeekIter<org.youdi.minihbase.KeyValue> {
+  private class MemStoreIter implements MStore.SeekIter<KeyValue> {
 
-    private MultiIter it;
+    private DiskStore.MultiIter it;
 
-    public MemStoreIter(NavigableMap<org.youdi.minihbase.KeyValue, org.youdi.minihbase.KeyValue> kvSet,
-                        NavigableMap<org.youdi.minihbase.KeyValue, org.youdi.minihbase.KeyValue> snapshot) throws IOException {
+    public MemStoreIter(NavigableMap<KeyValue, KeyValue> kvSet,
+                        NavigableMap<KeyValue, KeyValue> snapshot) throws IOException {
       List<IteratorWrapper> inputs = new ArrayList<>();
       if (kvSet != null && kvSet.size() > 0) {
         inputs.add(new IteratorWrapper(kvMap));
@@ -162,7 +164,7 @@ public class MemStore implements Closeable {
       if (snapshot != null && snapshot.size() > 0) {
         inputs.add(new IteratorWrapper(snapshot));
       }
-      it = new MultiIter(inputs.toArray(new IteratorWrapper[0]));
+      it = new DiskStore.MultiIter(inputs.toArray(new IteratorWrapper[0]));
     }
 
     @Override
@@ -171,12 +173,12 @@ public class MemStore implements Closeable {
     }
 
     @Override
-    public org.youdi.minihbase.KeyValue next() throws IOException {
+    public KeyValue next() throws IOException {
       return it.next();
     }
 
     @Override
-    public void seekTo(org.youdi.minihbase.KeyValue kv) throws IOException {
+    public void seekTo(KeyValue kv) throws IOException {
       it.seekTo(kv);
     }
   }

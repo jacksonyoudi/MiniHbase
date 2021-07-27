@@ -12,7 +12,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicLong;
 
-public class MStore implements org.youdi.minihbase.MiniBase {
+public class MStore implements MiniBase {
 
   private ExecutorService pool;
   private org.youdi.minihbase.MemStore memStore;
